@@ -14,6 +14,7 @@ NCC_SMALL = 0.97        # clustering: NCC of the 32x18 templates
 NCC_FULL = 0.95         # clustering: NCC of the full-size (64x36) templates
 MEAN_DIFF = 8.0         # clustering: mean abs diff of the 32x18 templates
 EDGE_ABSORB = 3         # pgm leftovers shorter than this next to a still join the still
+JOIN_GAP = 3            # runs of one still this close together in one segment are a single occurrence
 EXTRACT_FRAMES = 5
 
 
@@ -158,7 +159,8 @@ def detect_stills(ffmpeg, program, fps, segments, pgm_small, pgm_full, assets_di
     runs = find_runs(pgm_small, ranges)
     if progress:
         progress(40)
-    clusters = [c for c in cluster_runs(runs, pgm_full) if len(c) >= max(1, int(min_repeat))]
+    clusters = [c for c in cluster_runs(runs, pgm_full)
+                if count_occurrences([runs[i][:2] for i in c], ranges) >= max(1, int(min_repeat))]
     clusters.sort(key=lambda c: runs[c[0]][0])
     stills, templates = [], {}
     os.makedirs(assets_dir, exist_ok=True)
@@ -182,6 +184,22 @@ def detect_stills(ffmpeg, program, fps, segments, pgm_small, pgm_full, assets_di
             progress(40 + 60.0 * (n + 1) / len(clusters))
     segments = _absorb_leftovers(segments)
     return stills, segments, templates
+
+
+def count_occurrences(spans, ranges, gap=JOIN_GAP):
+    """Times a still goes on air: its runs, where runs in the same range at most `gap` frames apart count once
+    (a quasi-static shot broken into several runs by small motion is one occurrence)."""
+    def range_of(f):
+        for k, (s, e) in enumerate(ranges):
+            if s <= f < e:
+                return k
+        return -1
+    n, prev = 0, None
+    for s, e in sorted(spans):
+        if prev is None or range_of(s) != range_of(prev[0]) or s - prev[1] > gap:
+            n += 1
+        prev = (s, e)
+    return n
 
 
 def still_score(frames, tpl):

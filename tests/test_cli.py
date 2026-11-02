@@ -217,3 +217,29 @@ def test_cli_supersource_shoot(ffmpeg, tmp_path):
     x, y = (float(v) for v in box.find("adjust-transform").get("position").split())
     sx = float(box.find("adjust-transform").get("scale").split()[0])
     assert abs(x - (388 - 640) / 720.0 * 100) < 1.0 and abs(y) < 1.0 and abs(sx - 0.45) < 0.01
+    # each supersource holds single shots: graphic outside, layout A grouped, layout B separate and static
+    with open(res["analysis"]) as f:
+        analysis = json.load(f)
+    tl = truth["timeline"]
+    gfx = [e for e in tl if e["kind"] == "graphic"][0]
+    for ss in analysis["supersources"]:
+        for s, e in ss["occurrences"]:
+            assert e <= gfx["start"] + 2 or s >= gfx["end"] - 2, ("graphic inside", ss["id"], s, e)
+
+    def ss_at(entry):
+        hits = [ss for ss in analysis["supersources"]
+                if any(abs(s - entry["start"]) <= 2 and abs(e - entry["end"]) <= 2 for s, e in ss["occurrences"])]
+        assert len(hits) == 1, (entry, analysis["supersources"])
+        return hits[0]
+
+    a_ss = [ss_at(e) for e in tl if e["kind"] == "ss" and e["arg"] == "A"]
+    b_ss = ss_at([e for e in tl if e["kind"] == "ss" and e["arg"] == "B"][0])
+    assert len(set(ss["id"] for ss in a_ss)) == 1 and len(a_ss[0]["occurrences"]) == 2
+    assert b_ss["id"] != a_ss[0]["id"] and b_ss["animated"] is False and not a_ss[0]["animated"]
+    layer = {"cam%s" % b["angle"][1:]: b["layer"] for b in b_ss["boxes"]}  # a1..a3 = CAMS order
+    lay = [e for e in tl if e["arg"] == "B"][0]["layout"]  # bottom first; only overlapping pairs are ordered
+    pairs = [(p["cam"], q["cam"]) for i, p in enumerate(lay) for q in lay[i + 1:]
+             if min(p["rect"][2], q["rect"][2]) > max(p["rect"][0], q["rect"][0])
+             and min(p["rect"][3], q["rect"][3]) > max(p["rect"][1], q["rect"][1])]
+    assert len(pairs) == 2 and all(layer[lo] < layer[hi] for lo, hi in pairs), (pairs, layer)
+    assert not any(st["role"] == "still" for st in analysis["stills"])  # no SS layout taken for a still

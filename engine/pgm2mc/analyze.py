@@ -14,6 +14,13 @@ from .sync import decode_audio, lookup_manual, sync_iso
 
 REFINE_RADIUS = 3
 SS_MIN_LEN = 25
+# hard cuts inside pgm segments (mean abs diff of consecutive 32x18 thumbs, grey levels)
+CUT_MIN = 10.0          # absolute floor for a cut
+CUT_RATIO = 6.0         # ... and this many times the local median change (motion / compression noise)
+CUT_NOISE = 0.5         # floor for that median
+CUT_ISOLATION = 2.5     # ... and this many times both neighbouring changes (dissolve ramps, flash frames)
+CUT_WINDOW = 12         # local median over +-this many frame changes
+CUT_MIN_PIECE = 3       # no piece shorter than this at segment edges or between cuts
 
 
 def stderr_progress(stage, pct):
@@ -187,6 +194,10 @@ def _finish(store, scores, pgm, isos, results, ids, warnings, prog, ffmpeg_exe, 
     pgm_small, _ = store.get("pgm")
     pgm_full, _ = store.get("pgm_full")
     templates = {}
+    # pgm segments may hold several program shots (graphic, then a SuperSource, ...): detect on single shots
+    split = v2 and (stills or supersource) and pgm_small is not None
+    if split:
+        segments = split_at_cuts(segments, pgm_small)
 
     # 6. repeating stills (needs assets_dir for the PNGs)
     if v2 and stills:
@@ -205,6 +216,9 @@ def _finish(store, scores, pgm, isos, results, ids, warnings, prog, ffmpeg_exe, 
                                 lambda p: prog("supersource", min(99.0, p)))
         analysis["segments"] = segments
         prog("supersource", 100)
+    if split:
+        segments = _merge(segments)
+        analysis["segments"] = segments
 
     # 8. dissolves / dips (after stills so they can involve still templates)
     if dissolves:
@@ -223,6 +237,45 @@ def _finish(store, scores, pgm, isos, results, ids, warnings, prog, ffmpeg_exe, 
             prog("dissolves", 100)
     stills_mod.sync_occurrences(analysis["stills"], analysis["segments"])
     return analysis
+
+
+def hard_cuts(frames, start, end, chunk=4096):
+    """Frame indices in (start, end) where a hard cut starts a new shot (see the CUT_* constants)."""
+    n = end - start
+    if n < 2 * CUT_MIN_PIECE:
+        return []
+    parts = []
+    for c0 in range(start, end - 1, chunk):
+        x = np.asarray(frames[c0:min(end, c0 + chunk + 1)]).reshape(-1, frames.shape[1] * frames.shape[2])
+        parts.append(np.abs(np.diff(x.astype(np.float32), axis=0)).mean(axis=1))
+    d = np.concatenate(parts)  # d[j]: change from frame start + j to start + j + 1
+    nb = np.maximum(np.concatenate([[0.0], d[:-1]]), np.concatenate([d[1:], [0.0]]))
+    cand = np.nonzero((d >= CUT_MIN) & (d >= CUT_ISOLATION * nb))[0]
+    cuts = []
+    last = start
+    for j in cand:
+        lo, hi = max(0, j - CUT_WINDOW), min(len(d), j + CUT_WINDOW + 1)
+        local = np.concatenate([d[lo:max(lo, j - 1)], d[min(hi, j + 2):hi]])
+        med = float(np.median(local)) if len(local) else 0.0
+        f = start + int(j) + 1
+        if d[j] < CUT_RATIO * max(med, CUT_NOISE) or f - last < CUT_MIN_PIECE or end - f < CUT_MIN_PIECE:
+            continue
+        cuts.append(f)
+        last = f
+    return cuts
+
+
+def split_at_cuts(segments, frames):
+    """Split every pgm segment at its internal hard cuts into pgm pieces (same labels; _merge re-joins them)."""
+    out = []
+    for seg in segments:
+        if seg.get("kind") != "pgm":
+            out.append(seg)
+            continue
+        bounds = [seg["start"]] + hard_cuts(frames, seg["start"], seg["end"]) + [seg["end"]]
+        for a, b in zip(bounds, bounds[1:]):
+            out.append(dict(seg, start=a, end=b))
+    return out
 
 
 def _supersource(ffmpeg_exe, analysis, segments, assets_dir, warnings, progress):
