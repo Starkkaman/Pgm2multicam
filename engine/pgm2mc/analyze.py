@@ -1,14 +1,19 @@
-"""Orchestrate probe -> sync -> thumbnails/scores -> Viterbi into the Analysis dict (docs/CONTRACT.md v1)."""
+"""Orchestrate probe -> sync -> thumbnails/scores -> Viterbi -> stills -> supersource -> dissolves into the
+Analysis dict (docs/CONTRACT.md, version 2; version 1 compatible output when no assets_dir is given)."""
+import os
 import sys
 
 import numpy as np
 
+from . import dissolve as dissolve_mod
 from . import match
-from .frames import DEFAULT_SIZE, ThumbReader
+from . import stills as stills_mod
+from .frames import DEFAULT_SIZE, ThumbReader, ThumbStore
 from .probe import EngineError, find_tool, probe
 from .sync import decode_audio, lookup_manual, sync_iso
 
 REFINE_RADIUS = 3
+SS_MIN_LEN = 25
 
 
 def stderr_progress(stage, pct):
@@ -38,11 +43,15 @@ def _media_dict(info, id_, name):
 def analyze(pgm_path, iso_paths, ffmpeg=None, ffprobe=None, sync="auto", offsets=None,
             min_shot=match.DEFAULT_MIN_SHOT, switch_penalty=match.DEFAULT_SWITCH_PENALTY,
             pgm_floor=match.DEFAULT_PGM_FLOOR, thumb_size=DEFAULT_SIZE, hwaccel=None, audio_window=1200.0,
-            allow_rate_mismatch=False, refine=False, progress=stderr_progress):
+            allow_rate_mismatch=False, refine=False, progress=stderr_progress, dissolves=True, stills=True,
+            stills_min_repeat=2, supersource=True, assets_dir=None):
     """Run the whole analysis and return the Analysis dict.
 
     offsets: {ISO id | file stem | file name: frames} manual overrides. sync: auto | timecode | audio.
     progress: callable(stage, pct) or None; default prints `PROGRESS <stage> <pct>` to stderr.
+    assets_dir: where still PNGs go. Given -> version 2 analysis with stills / supersource detection and the
+    extra PROGRESS stages (stills, supersource, dissolves). None (v1 callers) -> no PNGs and no SuperSource,
+    "version": 1 and only the v1 stages; dissolves still move cuts and are listed in "transitions".
     """
     prog = _Progress(progress)
     if not iso_paths:
@@ -89,24 +98,36 @@ def analyze(pgm_path, iso_paths, ffmpeg=None, ffprobe=None, sync="auto", offsets
         results.append(res)
         prog("sync", 100.0 * (i + 1) / len(isos))
 
-    # 3+4. thumbnails and scores
+    # 3+4. thumbnails and scores (32x18 copies go to a disk-backed store for the post-passes)
     radius = REFINE_RADIUS if refine else 0
     prog("frames", 0)
     est = max(1, pgm.duration_frames)
-    readers = []
+    store = ThumbStore()
     try:
-        pgm_reader = ThumbReader(ffmpeg_exe, pgm.path, pgm.fps, 0, thumb_size, hwaccel)
-        readers.append(pgm_reader)
-        iso_readers = []
-        for iso, res in zip(isos, results):
-            r = ThumbReader(ffmpeg_exe, iso.path, iso.fps, res.offset_frames - radius, thumb_size, hwaccel)
-            readers.append(r)
-            iso_readers.append(r)
-        scores = match.compute_scores(pgm_reader, iso_readers, radius,
-                                      progress=lambda n: prog("frames", min(99.0, 100.0 * n / est)))
+        readers = []
+        try:
+            pgm_reader = ThumbReader(ffmpeg_exe, pgm.path, pgm.fps, 0, thumb_size, hwaccel)
+            readers.append(pgm_reader)
+            iso_readers = []
+            for iso, res in zip(isos, results):
+                r = ThumbReader(ffmpeg_exe, iso.path, iso.fps, res.offset_frames - radius, thumb_size, hwaccel)
+                readers.append(r)
+                iso_readers.append(r)
+            scores = match.compute_scores(pgm_reader, iso_readers, radius, store=store,
+                                          progress=lambda n: prog("frames", min(99.0, 100.0 * n / est)))
+        finally:
+            for r in readers:
+                r.close()
+            store.finish()
+        return _finish(store, scores, pgm, isos, results, ids, warnings, prog, ffmpeg_exe, radius, refine,
+                       min_shot, switch_penalty, pgm_floor, dissolves, stills, stills_min_repeat, supersource,
+                       assets_dir)
     finally:
-        for r in readers:
-            r.close()
+        store.close()
+
+
+def _finish(store, scores, pgm, isos, results, ids, warnings, prog, ffmpeg_exe, radius, refine, min_shot,
+            switch_penalty, pgm_floor, dissolves, stills, stills_min_repeat, supersource, assets_dir):
     prog("frames", 100)
     T = scores.shape[0]
     if T == 0:
@@ -140,6 +161,8 @@ def analyze(pgm_path, iso_paths, ffmpeg=None, ffprobe=None, sync="auto", offsets
             base = scores[:, np.arange(len(isos)), chosen]
             labels = match.viterbi(base, pgm_floor, switch_penalty, min_shot)
     segments = match.segments_from_labels(labels, base, ids)
+    for seg in segments:
+        seg["kind"] = "pgm" if seg["angle"] == "pgm" else "camera"
     prog("match", 100)
 
     iso_dicts = []
@@ -148,12 +171,109 @@ def analyze(pgm_path, iso_paths, ffmpeg=None, ffprobe=None, sync="auto", offsets
         d.update({"offset_frames": int(res.offset_frames), "sync_method": res.method,
                   "sync_confidence": float(res.confidence)})
         iso_dicts.append(d)
-    return {
-        "version": 1,
+    v2 = assets_dir is not None
+    analysis = {
+        "version": 2 if v2 else 1,
         "fps": {"num": pgm.fps.numerator, "den": pgm.fps.denominator},
         "drop_frame": bool(pgm.drop_frame if pgm.has_timecode else any(i.drop_frame for i in isos)),
         "program": _media_dict(pgm, "pgm", pgm.name),
         "isos": iso_dicts,
         "segments": segments,
+        "transitions": [],
+        "stills": [],
+        "supersources": [],
         "warnings": warnings,
     }
+    pgm_small, _ = store.get("pgm")
+    pgm_full, _ = store.get("pgm_full")
+    templates = {}
+
+    # 6. repeating stills (needs assets_dir for the PNGs)
+    if v2 and stills:
+        prog("stills", 0)
+        found, segments, templates = stills_mod.detect_stills(
+            ffmpeg_exe, analysis["program"], pgm.fps, segments, pgm_small, pgm_full, assets_dir,
+            stills_min_repeat, progress=lambda p: prog("stills", min(99.0, p)))
+        analysis["stills"].extend(found)
+        analysis["segments"] = segments
+        prog("stills", 100)
+
+    # 7. SuperSource (separate module, optional)
+    if v2 and supersource:
+        prog("supersource", 0)
+        segments = _supersource(ffmpeg_exe, analysis, segments, assets_dir, warnings,
+                                lambda p: prog("supersource", min(99.0, p)))
+        analysis["segments"] = segments
+        prog("supersource", 100)
+
+    # 8. dissolves / dips (after stills so they can involve still templates)
+    if dissolves:
+        if v2:
+            prog("dissolves", 0)
+        streams = []
+        for k in range(len(isos)):
+            fr, va = store.get("iso%d" % k)
+            streams.append((fr, va, int(chosen[k])))
+        src = dissolve_mod.Sources(pgm_small, streams, ids, templates)
+        segments, transitions = dissolve_mod.detect_dissolves(
+            segments, src, progress=(lambda p: prog("dissolves", min(99.0, p))) if v2 else None)
+        analysis["segments"] = segments
+        analysis["transitions"] = transitions
+        if v2:
+            prog("dissolves", 100)
+    stills_mod.sync_occurrences(analysis["stills"], analysis["segments"])
+    return analysis
+
+
+def _supersource(ffmpeg_exe, analysis, segments, assets_dir, warnings, progress):
+    try:
+        from .supersource import detect_supersources
+    except ImportError:
+        return segments
+    candidates = [[s["start"], s["end"]] for s in segments
+                  if s.get("kind") == "pgm" and s["end"] - s["start"] >= SS_MIN_LEN]
+    if not candidates:
+        return segments
+    try:
+        found, bg_stills = detect_supersources(ffmpeg_exe, analysis, candidates, os.path.abspath(assets_dir),
+                                               min_len=SS_MIN_LEN, progress=progress)
+    except EngineError:
+        raise
+    except Exception as e:  # a detector bug must not lose the rest of the analysis
+        warnings.append("SuperSource detection failed: %s" % e)
+        return segments
+    used = set(s["id"] for s in analysis["stills"])
+    renamed = {}
+    for st in bg_stills or []:
+        st = dict(st)
+        if st["id"] in used:
+            n = len(used) + 1
+            while "s%d" % n in used:
+                n += 1
+            renamed[st["id"]] = "s%d" % n
+            st["id"] = renamed[st["id"]]
+        used.add(st["id"])
+        analysis["stills"].append(st)
+    for ss in found or []:
+        if ss.get("background") in renamed:
+            ss["background"] = renamed[ss["background"]]
+        analysis["supersources"].append(ss)
+        for s, e in ss.get("occurrences", []):
+            segments = stills_mod.relabel(segments, int(s), int(e), {"kind": "supersource",
+                                                                     "supersource": ss["id"]})
+    return _merge(segments)
+
+
+def _merge(segments):
+    """Join neighbours that carry the same label."""
+    out = []
+    keys = ("angle", "kind", "still", "supersource")
+    for seg in segments:
+        if out and all(out[-1].get(k) == seg.get(k) for k in keys):
+            prev = out[-1]
+            a, b = prev["end"] - prev["start"], seg["end"] - seg["start"]
+            prev["score"] = round((prev["score"] * a + seg["score"] * b) / float(a + b), 4)
+            prev["end"] = seg["end"]
+        else:
+            out.append(seg)
+    return out

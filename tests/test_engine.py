@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import sys
+import types
 from fractions import Fraction
 
 import numpy as np
@@ -43,8 +44,9 @@ def iso_paths(truth):
 
 
 @pytest.fixture(scope="session")
-def results(media, ffmpeg):
-    return {name: analyze(t["pgm"]["path"], iso_paths(t), ffmpeg=ffmpeg, progress=None)
+def results(media, ffmpeg, tmp_path_factory):
+    return {name: analyze(t["pgm"]["path"], iso_paths(t), ffmpeg=ffmpeg, progress=None,
+                          assets_dir=str(tmp_path_factory.mktemp("assets%s" % name)))
             for name, t in media.items()}
 
 
@@ -278,6 +280,9 @@ def test_scenario(name, media, results):
     for s in res["segments"]:
         if s["angle"] != "pgm":
             assert s["score"] > 0.99, s       # off-by-one alignment would drop this to ~0.95
+        assert s["kind"] == ("pgm" if s["angle"] == "pgm" else "camera")
+    assert res["version"] == 2
+    assert res["transitions"] == [] and res["stills"] == [] and res["supersources"] == []
     acc = check_cut_accuracy(res, truth)
     print("scenario %s accuracy %.4f" % (name, acc))
 
@@ -314,3 +319,149 @@ def test_cli_progress_and_json(media, ffmpeg, tmp_path):
     res = json.loads(out.read_text())
     assert res["version"] == 1 and res["program"]["id"] == "pgm"
     check_cut_accuracy(res, t)
+
+
+# ---------------------------------------------------------------- scenario C (v2: dissolves, dips, stills)
+
+C_ID = {"cam1": "a1", "cam2": "a2", "cam3": "a3"}
+
+
+@pytest.fixture(scope="session")
+def media_c(ffmpeg):
+    with open(gen_media.generate_c("C")) as f:
+        return json.load(f)
+
+
+@pytest.fixture(scope="session")
+def result_c(media_c, ffmpeg, tmp_path_factory):
+    """Scenario C analysed with a stand-in SuperSource module (records its call, finds nothing), so this test
+    does not depend on the real detector; sys.modules is restored afterwards."""
+    stages, ss_calls = [], []
+
+    def fake_ss(ffmpeg_, analysis, candidates, assets_dir, min_len=25, progress=None):
+        ss_calls.append([list(c) for c in candidates])
+        return [], []
+
+    key = "pgm2mc.supersource"
+    saved = sys.modules.get(key)
+    sys.modules[key] = types.SimpleNamespace(detect_supersources=fake_ss)
+    try:
+        assets = str(tmp_path_factory.mktemp("assetsC"))
+        res = analyze(media_c["pgm"]["path"], iso_paths(media_c), ffmpeg=ffmpeg, assets_dir=assets,
+                      progress=lambda st, p: stages.append((st, p)))
+    finally:
+        if saved is None:
+            del sys.modules[key]
+        else:
+            sys.modules[key] = saved
+    return res, stages, ss_calls, assets
+
+
+def decode_rgb(ffmpeg, path):
+    p = subprocess.run([ffmpeg, "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                       stdout=subprocess.PIPE, check=True)
+    return np.frombuffer(p.stdout, dtype=np.uint8).astype(np.int16)
+
+
+def test_scenario_c_structure(media_c, result_c):
+    res, stages, ss_calls, _ = result_c
+    n = media_c["pgm_frames"]
+    segs = res["segments"]
+    assert res["version"] == 2 and res["program"]["duration_frames"] == n
+    assert segs[0]["start"] == 0 and segs[-1]["end"] == n
+    for a, b in zip(segs, segs[1:]):
+        assert a["end"] == b["start"]
+        assert (a["angle"], a["kind"], a.get("still")) != (b["angle"], b["kind"], b.get("still"))
+    for s in segs:
+        assert s["kind"] in ("camera", "pgm", "still", "supersource")
+        assert (s["angle"] != "pgm") == (s["kind"] == "camera")
+        assert 0.0 <= s["score"] <= 1.0
+    for iso, cam in zip(res["isos"], CAMS):
+        assert iso["offset_frames"] == media_c["isos"][cam]["offset"] and iso["sync_method"] == "timecode"
+    for stage in ("probe", "sync", "frames", "match", "stills", "supersource", "dissolves"):
+        assert (stage, 100) in stages, stage
+    order = [st for st, _ in stages]
+    assert order.index("stills") < order.index("supersource") < order.index("dissolves")
+    gfx2 = [sh for sh in media_c["shots"] if sh["source"] == "gfx2"][0]
+    assert ss_calls == [[[gfx2["start"], gfx2["end"]]]]     # only pgm segments >= 25 frames are candidates
+
+
+def test_scenario_c_transitions(media_c, result_c):
+    res = result_c[0]
+    segs = res["segments"]
+    bounds = {s["start"]: i for i, s in enumerate(segs)}
+    got = sorted(res["transitions"], key=lambda t: t["edit"])
+    want = media_c["transitions"]
+    assert len(got) == len(want), got
+    last = 0
+    for g, w in zip(got, want):
+        assert g["kind"] == w["kind"], (g, w)
+        assert abs(g["edit"] - w["centre"]) <= 2, (g, w)
+        assert abs(g["duration"] - w["duration"]) <= 3, (g, w)
+        assert 0 < g["confidence"] <= 1
+        if g["kind"] == "dip":
+            assert g["color"] == [0, 0, 0]
+        i = bounds[g["edit"]]
+        lo = g["edit"] - g["duration"] // 2
+        hi = lo + g["duration"]
+        assert lo >= max(last, segs[i - 1]["start"]) and hi <= segs[i]["end"]
+        last = hi
+        for s in segs:                       # no spurious pgm segment inside a transition
+            if s["kind"] == "pgm":
+                assert s["end"] <= w["start"] or s["start"] >= w["start"] + w["duration"], (s, w)
+        print("transition %s edit %d (truth %.1f) duration %d (truth %d) conf %.3f"
+              % (g["kind"], g["edit"], w["centre"], g["duration"], w["duration"], g["confidence"]))
+
+
+def test_scenario_c_labels(media_c, result_c):
+    res = result_c[0]
+    n = media_c["pgm_frames"]
+    got = frame_labels(res["segments"], n)
+    want = np.empty(n, dtype=object)
+    for sh in media_c["shots"]:
+        want[sh["start"]:sh["end"]] = C_ID.get(sh["source"], "pgm")
+    keep = np.ones(n, dtype=bool)
+    for tr in media_c["transitions"]:
+        keep[tr["start"]:tr["start"] + tr["duration"]] = False
+    acc = float(np.mean(got[keep] == want[keep]))
+    print("scenario C camera-label accuracy outside transitions %.4f" % acc)
+    assert acc >= 0.98
+
+
+def test_scenario_c_stills(media_c, result_c, ffmpeg):
+    res, _, _, assets = result_c
+    assert len(res["stills"]) == 1
+    st = res["stills"][0]
+    assert st["role"] == "still" and st["id"] == "s1"
+    assert os.path.dirname(st["path"]) == os.path.abspath(assets) and os.path.isfile(st["path"])
+    assert (st["width"], st["height"]) == (res["program"]["width"], res["program"]["height"]) == (1280, 720)
+    img = decode_rgb(ffmpeg, st["path"])
+    src = decode_rgb(ffmpeg, media_c["gfx"]["gfx1"])
+    assert img.size == src.size == 1280 * 720 * 3
+    mae = float(np.abs(img - src).mean())
+    print("still s1 mean abs error %.2f/255" % mae)
+    assert mae < 6
+    want = [[sh["start"], sh["end"]] for sh in media_c["shots"] if sh["source"] == "gfx1"]
+    assert len(st["occurrences"]) == len(want) == 3
+    for (gs, ge), (ws, we) in zip(st["occurrences"], want):
+        assert abs(gs - ws) <= 2 and abs(ge - we) <= 2
+    still_segs = [[s["start"], s["end"]] for s in res["segments"] if s["kind"] == "still"]
+    assert still_segs == st["occurrences"]
+    gfx2 = [sh for sh in media_c["shots"] if sh["source"] == "gfx2"][0]
+    kinds = set(s["kind"] for s in res["segments"] if s["start"] < gfx2["end"] and s["end"] > gfx2["start"])
+    assert kinds <= {"pgm", "camera"}
+    lab = frame_labels(res["segments"], media_c["pgm_frames"])
+    assert np.all(lab[gfx2["start"] + 1:gfx2["end"] - 1] == "pgm")
+
+
+def test_scenario_c_v1_mode_and_switches(media_c, ffmpeg, tmp_path):
+    """Without assets_dir the output stays version 1 (no PNGs, no stills) but cuts still follow dissolves."""
+    res = analyze(media_c["pgm"]["path"], iso_paths(media_c), ffmpeg=ffmpeg, progress=None)
+    assert res["version"] == 1 and res["stills"] == [] and res["supersources"] == []
+    assert all(s["kind"] in ("camera", "pgm") for s in res["segments"])
+    cam_trans = [t for t in media_c["transitions"] if t["boundary"] != 450]     # 450 needs the still template
+    for w in cam_trans:
+        assert any(abs(t["edit"] - w["centre"]) <= 2 and t["kind"] == w["kind"] for t in res["transitions"]), w
+    off = analyze(media_c["pgm"]["path"], iso_paths(media_c), ffmpeg=ffmpeg, progress=None, dissolves=False,
+                  stills=False, supersource=False, assets_dir=str(tmp_path))
+    assert off["version"] == 2 and off["transitions"] == [] and off["stills"] == [] and not os.listdir(str(tmp_path))

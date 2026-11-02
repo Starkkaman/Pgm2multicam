@@ -1,7 +1,7 @@
 """Per-frame angle scores and Viterbi smoothing into segments."""
 import numpy as np
 
-from .frames import normalise
+from .frames import downsample, normalise
 
 DEFAULT_PGM_FLOOR = 0.5
 DEFAULT_SWITCH_PENALTY = 1.5
@@ -9,17 +9,21 @@ DEFAULT_MIN_SHOT = 6
 CHUNK = 256
 
 
-def compute_scores(pgm_reader, iso_readers, radius=0, chunk=CHUNK, progress=None):
+def compute_scores(pgm_reader, iso_readers, radius=0, chunk=CHUNK, progress=None, store=None):
     """Score every PGM frame against every ISO at shifts -radius..+radius.
 
     Each ISO reader must start at ISO-local frame (offset - radius). Returns float32 array
     (frames, n_isos, 2*radius+1); score = max(0, NCC) of normalised thumbnails, 0 where the ISO has no media.
-    Only the score matrix is kept; thumbnails are streamed chunk by chunk.
+    Only the score matrix is kept; thumbnails are streamed chunk by chunk. With a frames.ThumbStore, 32x18
+    thumbnails are also appended to it: "pgm", "pgm_full" (reader size) and "iso<k>" (the raw ISO stream from
+    ISO-local frame offset - radius, so PGM frame t at shift j is stream frame t + j).
     """
     span = 2 * radius
     carries = []
     for r in iso_readers:
         f, v = r.read(span)
+        if store is not None and span:
+            store.append("iso%d" % len(carries), downsample(f), v)
         carries.append((normalise(f), v))
     parts = []
     total = 0
@@ -29,9 +33,14 @@ def compute_scores(pgm_reader, iso_readers, radius=0, chunk=CHUNK, progress=None
         if got == 0:
             break
         p = normalise(pf[:got])
+        if store is not None:
+            store.append("pgm", downsample(pf[:got]))
+            store.append("pgm_full", pf[:got])
         block = np.zeros((got, len(iso_readers), span + 1), dtype=np.float32)
         for k, r in enumerate(iso_readers):
             f, v = r.read(got)
+            if store is not None:
+                store.append("iso%d" % k, downsample(f), v)
             cf, cv = carries[k]
             buf = np.concatenate([cf, normalise(f)])
             val = np.concatenate([cv, v])

@@ -23,6 +23,11 @@ def main(argv=None):
     ap.add_argument("--audio-window", type=float, default=1200.0, help="seconds of audio used for sync")
     ap.add_argument("--allow-rate-mismatch", action="store_true")
     ap.add_argument("--refine", action="store_true")
+    ap.add_argument("--assets-dir", help="write still PNGs here and produce a version 2 analysis")
+    ap.add_argument("--no-dissolves", action="store_true")
+    ap.add_argument("--no-stills", action="store_true")
+    ap.add_argument("--stills-min-repeat", type=int, default=2)
+    ap.add_argument("--no-supersource", action="store_true")
     ap.add_argument("--ffmpeg")
     ap.add_argument("--ffprobe")
     a = ap.parse_args(argv)
@@ -32,7 +37,10 @@ def main(argv=None):
                          offsets=parse_manual_offsets(a.offset), min_shot=a.min_shot,
                          switch_penalty=a.switch_penalty, pgm_floor=a.pgm_floor, thumb_size=(w, h),
                          hwaccel=a.hwaccel, audio_window=a.audio_window,
-                         allow_rate_mismatch=a.allow_rate_mismatch, refine=a.refine)
+                         allow_rate_mismatch=a.allow_rate_mismatch, refine=a.refine,
+                         dissolves=not a.no_dissolves, stills=not a.no_stills,
+                         stills_min_repeat=a.stills_min_repeat, supersource=not a.no_supersource,
+                         assets_dir=a.assets_dir)
     except (EngineError, ValueError) as e:
         sys.stderr.write("ERROR %s\n" % e)
         return 1

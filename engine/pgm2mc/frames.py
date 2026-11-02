@@ -1,4 +1,6 @@
 """Stream small grayscale thumbnails out of ffmpeg (rawvideo pipe), aligned to PGM frames."""
+import os
+import shutil
 import subprocess
 import tempfile
 
@@ -83,3 +85,79 @@ def normalise(thumbs):
     x /= norm[:, None]
     x[flat] = 0.0
     return x
+
+
+SMALL_SIZE = (32, 18)
+
+
+def downsample(thumbs, size=SMALL_SIZE):
+    """(n, h, w) uint8 -> (n, size[1], size[0]) uint8 by box averaging (nearest pick when upsampling)."""
+    n, h, w = thumbs.shape
+    sw, sh = size
+    if (w, h) == (sw, sh):
+        return thumbs.copy()
+    x = thumbs.astype(np.float32)
+    if w >= sw:
+        x = np.add.reduceat(x, (np.arange(sw) * w) // sw, axis=2) / np.diff(
+            np.append((np.arange(sw) * w) // sw, w)).astype(np.float32)
+    else:
+        x = x[:, :, (np.arange(sw) * w) // sw]
+    if h >= sh:
+        edges = (np.arange(sh) * h) // sh
+        x = np.add.reduceat(x, edges, axis=1) / np.diff(np.append(edges, h)).astype(np.float32)[:, None]
+    else:
+        x = x[:, (np.arange(sh) * h) // sh, :]
+    return np.clip(np.rint(x), 0, 255).astype(np.uint8)
+
+
+class ThumbStore:
+    """Disk-backed thumbnail streams (one append-only raw file each, read back as numpy memmaps).
+
+    Used during the scoring pass to keep 32x18 thumbnails of the PGM and every ISO stream so the dissolve and
+    still post-passes need no second decode. RAM stays bounded: frames go straight to disk.
+    """
+
+    def __init__(self):
+        self.dir = tempfile.mkdtemp(prefix="pgm2mc_thumbs_")
+        self._files = {}
+        self._shapes = {}
+        self._maps = {}
+
+    def append(self, key, frames, valid=None):
+        if key not in self._files:
+            self._files[key] = (open(os.path.join(self.dir, "%s.raw" % key), "wb"),
+                                open(os.path.join(self.dir, "%s.valid" % key), "wb"))
+            self._shapes[key] = [0, frames.shape[1], frames.shape[2]]
+        f, fv = self._files[key]
+        f.write(np.ascontiguousarray(frames, dtype=np.uint8).tobytes())
+        if valid is None:
+            valid = np.ones(len(frames), dtype=bool)
+        fv.write(np.ascontiguousarray(valid, dtype=np.uint8).tobytes())
+        self._shapes[key][0] += len(frames)
+
+    def finish(self):
+        for f, fv in self._files.values():
+            f.close()
+            fv.close()
+
+    def get(self, key):
+        """(frames memmap (n, h, w) uint8, valid (n,) bool) or (None, None) if the stream is unknown/empty."""
+        if key not in self._shapes or self._shapes[key][0] == 0:
+            return None, None
+        if key not in self._maps:
+            n, h, w = self._shapes[key]
+            fr = np.memmap(os.path.join(self.dir, "%s.raw" % key), dtype=np.uint8, mode="r", shape=(n, h, w))
+            va = np.fromfile(os.path.join(self.dir, "%s.valid" % key), dtype=np.uint8).astype(bool)
+            self._maps[key] = (fr, va)
+        return self._maps[key]
+
+    def close(self):
+        self.finish()
+        self._maps.clear()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
