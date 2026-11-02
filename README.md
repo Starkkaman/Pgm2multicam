@@ -19,12 +19,45 @@ It writes three timelines as FCPXML and imports them into Resolve:
   - 19.1 to 21.0: the script runs without a dialog. It uses your Media Pool selection with default settings
     and prints progress to the Console (Workspace > Console).
   - 21.1 and later: the free version no longer runs Python scripts. Use the CLI, then File > Import >
-    Timeline.
-- Python 3.8 or newer. On macOS the [python.org](https://www.python.org/downloads/macos/) installer is
-  recommended, because Resolve's scripting also uses it. `brew install python` works for the engine.
-- ffmpeg and ffprobe. On macOS: `brew install ffmpeg`.
+    Timeline. The self-contained macOS install uses a Lua script instead. Whether free 21.1 runs it has not
+    been checked yet.
+- The self-contained macOS install needs nothing else. The source install and the CLI need:
+  - Python 3.8 or newer. On macOS the [python.org](https://www.python.org/downloads/macos/) installer is
+    recommended, because Resolve's Python scripting also uses it. `brew install python` works for the engine.
+  - ffmpeg and ffprobe. On macOS: `brew install ffmpeg`.
 
-## Install
+## Self-contained macOS install
+
+Use this if you don't want to install Python or ffmpeg. The release zip
+(`PGM-to-Multicam-macos-<arch>-<version>.zip`, where arch is `arm64` for Apple silicon or `x86_64` for Intel)
+contains everything:
+
+1. Unzip it and open the `PGM to Multicam` folder.
+2. Double-click **Install.command**. If macOS refuses to open it, right-click it > **Open** (macOS 14 and
+   earlier), or use **Open Anyway** in System Settings > Privacy & Security (macOS 15 and later).
+3. Restart Resolve, then use **Workspace > Scripts > PGM to Multicam**.
+
+The installer:
+- copies the engine (a self-contained `pgm2mc` bundle with its own ffmpeg and ffprobe) to
+  `~/Library/Application Support/pgm2multicam/engine/pgm2mc/`, and checks that it starts;
+- writes `config.json` next to it, pointing at the engine;
+- puts `PGM to Multicam.lua` in `~/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility/`.
+  Resolve runs Lua scripts itself, so no Python is needed;
+- removes the download quarantine flag from the files it installed;
+- renames the script from an earlier Python install to `PGM to Multicam.py.disabled`, so the menu shows the
+  script only once.
+
+To update, run the new Install.command. **Uninstall.command** removes only what Install.command added.
+
+The Lua script works like the Python one: same dialog, same no-dialog mode, same imports. The engine runs in
+the background, so Resolve stays responsive. Its output goes to `NAME_engine_stdout.log` and
+`NAME_engine_stderr.log` in the output folder.
+
+To build the zip from an engine bundle built on a Mac: `packaging/macos/make_release.sh dist/pgm2mc [VERSION]`.
+
+## Install from source (Python engine, alternative)
+
+This route also gives you the command line (see below).
 
 macOS:
 
@@ -148,7 +181,8 @@ Limits:
 
 ## Troubleshooting
 
-- **"engine is not installed"**: run the installer again and restart Resolve.
+- **"engine is not installed"**: run the installer again (Install.command for the self-contained install) and
+  restart Resolve.
 - **ffmpeg not found**: run `brew install ffmpeg`, then run the installer again (it records the paths).
 - **The multicam shows up as a compound clip**:
   1. Right-click it in the Media Pool and choose **Convert Compound Clips to Multicam Clips**. This cannot be
