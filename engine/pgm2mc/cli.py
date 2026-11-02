@@ -37,6 +37,11 @@ def build_parser():
     ap.add_argument("--ffmpeg")
     ap.add_argument("--ffprobe")
     ap.add_argument("--from-json", metavar="ANALYSIS.json", help="skip analysis, regenerate from a saved analysis")
+    ap.add_argument("--no-dissolves", action="store_true", help="do not detect dissolves / dips")
+    ap.add_argument("--no-stills", action="store_true", help="do not extract repeating stills")
+    ap.add_argument("--stills-min-repeat", type=int, default=2, metavar="N",
+                    help="occurrences needed before a static image becomes a still (default 2)")
+    ap.add_argument("--no-supersource", action="store_true", help="do not rebuild SuperSource composites")
     ap.add_argument("--thumb", default="64x36", help=argparse.SUPPRESS)
     return ap
 
@@ -56,7 +61,7 @@ def _progress(stage, pct):
     sys.stderr.flush()
 
 
-def _run_analysis(a):
+def _run_analysis(a, assets_dir):
     from .analyze import analyze
     from .sync import parse_manual_offsets
     try:
@@ -67,7 +72,9 @@ def _run_analysis(a):
                    ffprobe=a.ffprobe, sync=a.sync, offsets=parse_manual_offsets(a.offset),
                    min_shot=a.min_shot, switch_penalty=a.switch_penalty, pgm_floor=a.pgm_floor,
                    thumb_size=(w, h), hwaccel=a.hwaccel, audio_window=a.audio_window,
-                   allow_rate_mismatch=a.allow_rate_mismatch, refine=a.refine, progress=_progress)
+                   allow_rate_mismatch=a.allow_rate_mismatch, refine=a.refine, progress=_progress,
+                   dissolves=not a.no_dissolves, stills=not a.no_stills, stills_min_repeat=a.stills_min_repeat,
+                   supersource=not a.no_supersource, assets_dir=assets_dir)
 
 
 def main(argv=None):
@@ -77,26 +84,32 @@ def main(argv=None):
         ap.error("need a PGM file and at least one ISO file (or --from-json)")
     if a.name is not None and not a.name.strip():
         ap.error("--name must not be empty")
+    if a.stills_min_repeat < 1:
+        ap.error("--stills-min-repeat must be at least 1")
     try:
         outdir = os.path.abspath(a.outdir)
         if a.from_json:
             with open(a.from_json, encoding="utf-8") as f:
                 analysis = json.load(f)
-            if not isinstance(analysis, dict) or analysis.get("version") != 1:
-                raise EngineError("%s is not a version 1 analysis" % a.from_json)
+            if not isinstance(analysis, dict) or analysis.get("version") not in (1, 2):
+                raise EngineError("%s is not a version 1 or 2 analysis" % a.from_json)
+            stem = os.path.splitext(os.path.basename(analysis["program"]["path"]))[0]
         else:
             for p in [a.pgm] + a.isos:
                 if not os.path.isfile(p):
                     raise EngineError("file not found: %s" % p)
-            analysis = _run_analysis(a)
+            stem = os.path.splitext(os.path.basename(a.pgm))[0]
+        name = a.name.strip() if a.name else stem
+        stills_dir = os.path.join(outdir, fcpxml.safe_filename(name) + "_stills")
+        os.makedirs(stills_dir, exist_ok=True)
+        if not a.from_json:
+            analysis = _run_analysis(a, stills_dir)
         warnings = list(analysis.get("warnings") or [])
         for w in warnings:
             _warn(w)
 
         _progress("write", 0)
-        os.makedirs(outdir, exist_ok=True)
-        name = a.name.strip() if a.name else os.path.splitext(os.path.basename(analysis["program"]["path"]))[0]
-        paths, plan = fcpxml.write_all(analysis, outdir, name, a.audio)
+        paths, plan = fcpxml.write_all(analysis, outdir, name, a.audio, assets_dir=stills_dir)
         _progress("write", 75)
         paths["analysis"] = os.path.join(outdir, fcpxml.safe_filename(plan.name) + "_analysis.json")
         with open(paths["analysis"], "w", encoding="utf-8") as f:
@@ -115,7 +128,9 @@ def main(argv=None):
         return _err("internal error: %s: %s" % (e.__class__.__name__, e))
     sys.stderr.flush()
     result = {"multicam": paths["multicam"], "conform": paths["conform"], "stacked": paths["stacked"],
-              "analysis": paths["analysis"], "warnings": warnings, "segments": len(plan.segments)}
+              "analysis": paths["analysis"], "warnings": warnings, "segments": len(plan.segments),
+              "stills_dir": stills_dir}
+    result.update(fcpxml.summary(plan))
     sys.stdout.write("RESULT %s\n" % json.dumps(result))
     sys.stdout.flush()
     return 0

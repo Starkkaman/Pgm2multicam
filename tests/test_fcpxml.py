@@ -37,9 +37,56 @@ def validate_dtd(path_or_text):
 def _contiguous(container, origin):
     pos = origin
     for child in container:
+        if child.tag == "transition":
+            continue
         assert parse_time(child.get("offset")) == pos, (child.tag, child.attrib, pos)
         pos += parse_time(child.get("duration"))
     return pos
+
+
+def _media_window(el, assets, angle_media):
+    """(lo, hi) media range of a spine item in its own start time, or None for timeless stills."""
+    if el.tag == "mc-clip":
+        video = [s for s in el.findall("mc-source") if s.get("srcEnable") in ("video", "all")][0]
+        return angle_media[(el.get("ref"), video.get("angleID"))]
+    a = assets[el.get("ref")]
+    if parse_time(a.get("duration")) == 0:
+        return None
+    a0 = parse_time(a.get("start"))
+    return a0, a0 + parse_time(a.get("duration"))
+
+
+def _check_transitions(spine, assets, angle_media):
+    kids = list(spine)
+    for i, tr in enumerate(kids):
+        if tr.tag != "transition":
+            continue
+        assert 0 < i < len(kids) - 1 and kids[i - 1].tag != "transition" and kids[i + 1].tag != "transition"
+        a, b = kids[i - 1], kids[i + 1]
+        cut = parse_time(b.get("offset"))
+        assert parse_time(a.get("offset")) + parse_time(a.get("duration")) == cut
+        off, d = parse_time(tr.get("offset")), parse_time(tr.get("duration"))
+        pre, post = cut - off, off + d - cut
+        assert 0 < pre <= post and pre <= parse_time(a.get("duration")) and post <= parse_time(b.get("duration"))
+        wa, wb = _media_window(a, assets, angle_media), _media_window(b, assets, angle_media)
+        if wa:
+            assert parse_time(a.get("start")) + parse_time(a.get("duration")) + post <= wa[1], (a.attrib, tr.attrib)
+        if wb:
+            assert parse_time(b.get("start")) - pre >= wb[0], (b.attrib, tr.attrib)
+        else:
+            assert parse_time(b.get("start")) - pre >= 0, (b.attrib, tr.attrib)
+
+
+def _check_anchored(spine):
+    for clip in spine:
+        s, d = parse_time(clip.get("start") or "0s"), parse_time(clip.get("duration"))
+        for child in clip:
+            if child.get("lane") is not None:
+                o = parse_time(child.get("offset"))
+                if child.get("lane") != "-1":
+                    assert s <= o and o + parse_time(child.get("duration")) <= s + d, (clip.attrib, child.attrib)
+            if child.tag == "marker":
+                assert s <= parse_time(child.get("start")) < s + d
 
 
 def check_structure(root):
@@ -51,7 +98,9 @@ def check_structure(root):
             if el.get(attr) is not None:
                 v = parse_time(el.get(attr))
                 assert (v / fd).denominator == 1, (el.tag, attr, el.get(attr))
-                if attr == "duration":
+                if attr == "duration" and not (el.tag == "asset" and v == 0 and
+                                               res.find("format[@id='%s']" % el.get("format")).get("frameDuration")
+                                               is None):
                     assert v > 0, (el.tag, el.attrib)
     for el in root.iter():
         for attr in TIME_ATTRS:
@@ -77,6 +126,8 @@ def check_structure(root):
         spine = seq.find("spine")
         end = _contiguous(spine, parse_time(seq.get("tcStart")))
         assert end - parse_time(seq.get("tcStart")) == parse_time(seq.get("duration"))
+        _check_transitions(spine, assets, angle_media)
+        _check_anchored(spine)
         for clip in spine.findall("mc-clip"):
             mc = media[clip.get("ref")].find("multicam")
             t0, dur = parse_time(mc.get("tcStart")), parse_time(mc.get("duration"))
@@ -98,14 +149,19 @@ def check_file(path):
 
 
 def cut_boundaries(root):
-    """[(start, end, angleID)] in PGM frames from the Multicam Cut spine."""
+    """[(start, end, angleID)] in PGM frames from the Multicam Cut spine (transitions skipped, slugs as "video")."""
     seq = root.find("library/event/project/sequence")
     fd = parse_time(root.find("resources/format").get("frameDuration"))
     t0 = parse_time(seq.get("tcStart"))
     out = []
     for clip in seq.find("spine"):
+        if clip.tag == "transition":
+            continue
         a = (parse_time(clip.get("offset")) - t0) / fd
         b = a + parse_time(clip.get("duration")) / fd
+        if clip.tag != "mc-clip":
+            out.append((int(a), int(b), clip.tag))
+            continue
         srcs = clip.findall("mc-source")
         video = [s for s in srcs if s.get("srcEnable") in ("video", "all")][0]
         out.append((int(a), int(b), video.get("angleID")))
