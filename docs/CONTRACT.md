@@ -65,3 +65,26 @@ else `audio` (FFT cross-correlation of mono 8 kHz envelopes/samples, coarse then
 between PGM and each ISO thumbnail, mapped to 0..1. Frames where the ISO has no media score 0. 5. Viterbi over
 states {ISOs, pgm} with a switch penalty and a floor score for `pgm`; enforce `--min-shot` frames (default 6).
 6. Optional `--refine` searches ±3 frames per ISO for a better offset using the frames where that ISO is live.
+
+## CLI contract (cli.py) — fixed, the Resolve script depends on it
+
+```
+python -m pgm2mc PGM ISO [ISO ...] -o OUTDIR [--name NAME]
+    [--sync auto|timecode|audio] [--offset ISO_STEM=+N ...] [--min-shot 6] [--switch-penalty F] [--pgm-floor F]
+    [--refine] [--hwaccel X] [--audio-window SEC] [--allow-rate-mismatch]
+    [--audio pgm|follow] [--ffmpeg PATH] [--ffprobe PATH] [--from-json ANALYSIS.json]
+```
+- Angle names = ISO file stems; the PGM angle is always added last, named "PGM".
+- Writes into OUTDIR (NAME defaults to the PGM stem):
+  `NAME_multicam.fcpxml` (multicam clip + "NAME Multicam Cut" timeline of mc-clips),
+  `NAME_conform.fcpxml` ("NAME Conform": plain asset-clips cut from the ISOs/PGM on the primary storyline, PGM audio
+  as a connected clip — works even if Resolve imports multicams as compound clips),
+  `NAME_stacked.fcpxml` ("NAME Stacked": every file synced on its own lane, for Convert-to-Multicam fallback),
+  `NAME_analysis.json`.
+- `--audio pgm` (default): mc-clips take video from the ISO angle and audio from the PGM angle (split mc-source);
+  `--audio follow`: single `srcEnable="all"` mc-source.
+- `--from-json` skips analysis and only regenerates the FCPXML files from a saved analysis.
+- stderr: `PROGRESS <stage> <0-100>` lines (stages probe, sync, frames, match, write), `WARN <text>`, and on failure
+  `ERROR <text>` + exit code 1 (2 for usage errors).
+- stdout, last line on success: `RESULT {"multicam": ..., "conform": ..., "stacked": ..., "analysis": ...,
+  "warnings": [...], "segments": N}` (absolute paths, JSON).
