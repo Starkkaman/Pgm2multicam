@@ -150,13 +150,16 @@ def generate(force=False):
         truth["isos"][cam] = {"path": path, "offset": P0 - a, "frames": b - a, "width": IW, "height": IH,
                               "start_tc_frames": 3600 * FPS + a}
 
-    inputs, chains, labels = [], [], []
-
-    def add_input(args):
-        inputs.extend(args)
-        return inputs.count("-i") - 1
-
+    # Each segment is rendered on its own (lossless FFV1) and the PGM is encoded once from the
+    # concat demuxer: a single 16-input filter graph deadlocks on ffmpeg 9.
+    seg_paths = []
     for si, (s, e, kind, arg) in enumerate(TIMELINE):
+        inputs, chains = [], []
+
+        def add_input(args):
+            inputs.extend(args)
+            return inputs.count("-i") - 1
+
         n = e - s
         lab = "s%d" % si
         trim = "trim=start_frame=%d:end_frame=%d,setpts=PTS-STARTPTS" % (P0 + s, P0 + e)
@@ -179,7 +182,11 @@ def generate(force=False):
                 chains.append("[%s][%sx%d]overlay=x='%s':y=%d:eof_action=pass[%s]" % (cur, lab, bi, xs, y, nxt))
                 cur = nxt
             chains.append("[%s]null[%s]" % (cur, lab))
-        labels.append(lab)
+        seg = os.path.join(OUT, "seg_%02d.mkv" % si)
+        seg_paths.append(seg)
+        cmds.append(base + inputs + ["-filter_complex", ";".join(chains), "-map", "[%s]" % lab,
+                                     "-frames:v", str(n), "-r", str(FPS), "-c:v", "ffv1",
+                                     "-pix_fmt", "yuv420p", seg])
         entry = {"start": s, "end": e, "kind": kind, "arg": arg}
         if kind == "ss":
             entry["layout"] = truth_layout(LAYOUTS[arg])
@@ -188,17 +195,20 @@ def generate(force=False):
                 entry["move_px"] = MOVE_PX
         truth["timeline"].append(entry)
 
-    graph = ";".join(chains) + ";" + "".join("[%s]" % l for l in labels) + \
-        "concat=n=%d:v=1:a=0,format=yuv420p[v]" % len(labels)
-    pgm = os.path.join(OUT, "PGM.mov")
-    cmds.append(base + inputs + ["-filter_complex", graph, "-map", "[v]", "-r", str(FPS), "-c:v", "libx264",
-                                 "-preset", "ultrafast", "-crf", "18", "-g", "50", "-pix_fmt", "yuv420p",
-                                 "-timecode", tc_string(3600 * FPS + P0), pgm])
     run_parallel(cmds)
+    seg_list = os.path.join(OUT, "segments.txt")
+    with open(seg_list, "w") as f:
+        for seg in seg_paths:
+            f.write("file '%s'\n" % seg.replace("'", "'\\''"))
+    pgm = os.path.join(OUT, "PGM.mov")
+    run_parallel([base + ["-f", "concat", "-safe", "0", "-i", seg_list, "-map", "0:v", "-r", str(FPS),
+                          "-frames:v", str(TIMELINE[-1][1]), "-c:v", "libx264",
+                          "-preset", "ultrafast", "-crf", "18", "-g", "50", "-pix_fmt", "yuv420p",
+                          "-timecode", tc_string(3600 * FPS + P0), pgm]])
     truth["pgm"] = {"path": pgm, "start_tc_frames": 3600 * FPS + P0}
 
     for f in os.listdir(OUT):
-        if f.startswith("world_"):
+        if f.startswith(("world_", "seg_")) or f == "segments.txt":
             os.remove(os.path.join(OUT, f))
     with open(truth_path, "w") as f:
         json.dump(truth, f, indent=1)
