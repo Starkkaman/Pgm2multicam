@@ -88,3 +88,47 @@ python -m pgm2mc PGM ISO [ISO ...] -o OUTDIR [--name NAME]
   `ERROR <text>` + exit code 1 (2 for usage errors).
 - stdout, last line on success: `RESULT {"multicam": ..., "conform": ..., "stacked": ..., "analysis": ...,
   "warnings": [...], "segments": N}` (absolute paths, JSON).
+
+## v2 additions (2026-11-02): dissolves, stills, SuperSource
+
+Analysis `"version": 2` (fcpxml.py must still accept v1 = no fields below). New/changed fields:
+
+```json
+"segments": [{"start": 0, "end": 240, "angle": "a1", "score": 0.93, "kind": "camera"},
+             {"start": 240, "end": 300, "angle": "pgm", "score": 0.9, "kind": "still", "still": "s1"},
+             {"start": 300, "end": 900, "angle": "pgm", "score": 0.8, "kind": "supersource", "supersource": "ss1"},
+             {"start": 900, "end": 960, "angle": "pgm", "score": 0.2, "kind": "pgm"}],
+"transitions": [{"edit": 240, "duration": 24, "kind": "dissolve", "confidence": 0.9},
+                {"edit": 900, "duration": 30, "kind": "dip", "color": [0, 0, 0], "confidence": 0.8}],
+"stills": [{"id": "s1", "path": "/abs/OUTDIR/NAME_stills/s1.png", "width": 1920, "height": 1080,
+            "occurrences": [[240, 300], [5000, 5100]], "role": "still"}],
+"supersources": [{"id": "ss1", "background": "s2",
+                  "boxes": [{"angle": "a1", "layer": 1, "rect": [0.05, 0.25, 0.48, 0.75], "crop": [0.1, 0.0, 0.1, 0.0]}],
+                  "occurrences": [[300, 900]], "animated": false, "confidence": 0.85}]
+```
+- `kind`: camera (angle = ISO id) | still | supersource | pgm (angle = "pgm" for the last three).
+- `transitions`: `edit` equals a segment boundary; the transition is centred on it (`duration` frames, split evenly).
+  `dissolve` = A→B mix; `dip` = through a solid colour (usually black). Works between any two segment kinds.
+- `stills`: static program images (graphics / still store / SS background art) written as PNG at PGM resolution
+  (median of a few full-res frames). `role`: "still" or "background" (SS art fill). Only stills that occur at least
+  `--stills-min-repeat` times (default 2) become `kind: still` segments; SS backgrounds always kept.
+- `supersources`: a composite of scaled/cropped ISOs over a background. `rect` = visible box in PGM frame fractions
+  [x0, y0, x1, y1] (origin top-left); `crop` = fraction trimmed from the ISO frame [left, top, right, bottom];
+  `layer` 1 = bottom box. Identical layouts across occurrences share one entry.
+- Timelines (Multicam Cut and Conform): the spine keeps the PGM-angle clip under still / supersource segments (safe
+  fallback); a still goes on lane 1 above it; a supersource puts its background still on lane 1 and each box as an
+  ISO clip with transform + crop on lanes 2..n. Transitions become FCPXML cross-dissolve / dip transitions.
+- CLI flags: `--no-dissolves`, `--no-stills`, `--stills-min-repeat N`, `--no-supersource`; assets go to
+  `OUTDIR/NAME_stills/`. RESULT gains `"stills_dir"`, `"transitions": N`, `"supersources": N`, `"stills": N`.
+
+Engine module boundaries:
+- `thumbs` store: during the first decode pass, also keep 32x18 gray thumbnails of PGM and every aligned ISO in a
+  disk-backed numpy memmap (temp dir), for dissolve/still analysis without a second full decode.
+- `stills.py`: static-run detection on non-camera segments, clustering, full-res extraction.
+- `dissolve.py`: at each boundary, fit PGM ≈ α·A + (1−α)·B (A/B = ISO, still template, or solid colour) over a
+  window (max 60 frames); a monotonic α ramp → transition; removes spurious short `pgm` segments inside dissolves.
+- `supersource.py` — exactly this entry point (analyze.py calls it; skips if it raises ImportError):
+  `detect_supersources(ffmpeg, analysis, candidates, assets_dir, min_len=25, progress=None) -> (supersources, stills)`
+  where `analysis` is the v2 dict built so far (program + isos with offsets), `candidates` = list of
+  `[start, end]` pgm-segment ranges; returns new supersource entries (with `occurrences`) and the background still
+  entries it wrote (role "background"). analyze.py then relabels the matching segments.
