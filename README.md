@@ -30,7 +30,7 @@ It writes three timelines as FCPXML and imports them into Resolve:
 
 Use this if you don't want to install Python or ffmpeg. The release zip
 (`PGM-to-Multicam-macos-<arch>-<version>.zip`, where arch is `arm64` for Apple silicon or `x86_64` for Intel)
-contains everything:
+contains everything. Current builds are `arm64` only and need macOS 14 Sonoma or newer.
 
 1. Unzip it and open the `PGM to Multicam` folder.
 2. Double-click **Install.command**. If macOS refuses to open it, right-click it > **Open** (macOS 14 and

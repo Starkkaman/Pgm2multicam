@@ -3,6 +3,7 @@ PGM to Multicam for DaVinci Resolve (macOS)
 
 Turns a live-cut program recording (PGM) and the camera ISO recordings into a Resolve multicam clip with the
 live cut already applied. Nothing else needs to be installed: the engine and ffmpeg are included.
+Requires a Mac with Apple Silicon (M1 or later) running macOS 14 Sonoma or newer.
 
 Install
 -------
