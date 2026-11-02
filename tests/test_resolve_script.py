@@ -57,6 +57,42 @@ def test_build_argv(mod):
         mod.build_argv("/py", "P", ["I"], "/o", sync="manual")
 
 
+def test_rebuild_flags(mod):
+    assert mod.rebuild_flags() == [] and mod.rebuild_flags(mod.DEFAULT_REBUILD) == []
+    assert mod.rebuild_flags({"dissolves": False, "stills": False, "stills_min_repeat": 5,
+                              "supersource": False}) == ["--no-dissolves", "--no-stills", "--no-supersource"]
+    assert mod.rebuild_flags({"stills_min_repeat": 3}) == ["--stills-min-repeat", "3"]
+    assert mod.rebuild_flags({"stills_min_repeat": 99}) == ["--stills-min-repeat", "20"]
+    argv = mod.build_argv("/py", "P", ["I"], "/o", rebuild={"supersource": False, "stills_min_repeat": 4})
+    assert argv[-3:] == ["--stills-min-repeat", "4", "--no-supersource"]
+
+
+def test_result_summary(mod):
+    assert mod.result_summary({"transitions": 12, "stills": 3, "supersources": 2}) == \
+        "12 transitions, 3 stills, 2 SuperSource layouts"
+    assert mod.result_summary({"transitions": 1, "stills": 1, "supersources": 1}) == \
+        "1 transition, 1 still, 1 SuperSource layout"
+    assert mod.result_summary({"segments": 3}) == ""
+    assert mod.describe_event("result", {"segments": 3}) == "Engine finished: 3 segments."
+
+
+def test_box_props_worked_example(mod):
+    # RESEARCH2 §3.3: ISO 3840x2160 in 1920x1080, crop 10 % left/right -> Pan -480, Zoom 0.45, Crop 192
+    p = mod.box_props({"rect": [0.07, 0.275, 0.43, 0.725], "crop": [0.1, 0, 0.1, 0]}, 3840, 2160, 1920, 1080)
+    assert p["Pan"] == pytest.approx(-480) and p["Tilt"] == 0 and str(p["Tilt"]) == "0.0"
+    assert p["ZoomX"] == pytest.approx(0.45) and p["ZoomY"] == pytest.approx(0.45) and p["ZoomGang"] is True
+    assert p["CropLeft"] == pytest.approx(192) and p["CropRight"] == pytest.approx(192)
+    assert p["CropTop"] == 0 and p["CropBottom"] == 0
+    assert p["Scaling"] == 2 and p["CropRetain"] is True
+    right = mod.box_props({"rect": [0.57, 0.275, 0.93, 0.725], "crop": [0.1, 0, 0.1, 0]}, 3840, 2160, 1920, 1080)
+    assert right["Pan"] == pytest.approx(480)
+    # uncropped quarter box top-left, non-uniform beyond tolerance keeps separate zooms
+    q = mod.box_props({"rect": [0, 0, 0.5, 0.5], "crop": [0, 0, 0, 0]}, 1920, 1080, 1920, 1080)
+    assert (q["Pan"], q["Tilt"], q["ZoomX"]) == (pytest.approx(-480), pytest.approx(270), pytest.approx(0.5))
+    s = mod.box_props({"rect": [0, 0, 0.5, 0.25]}, 1920, 1080, 1920, 1080)
+    assert s["ZoomGang"] is False and s["ZoomY"] == pytest.approx(0.25)
+
+
 def test_parse_line(mod):
     assert mod.parse_line("PROGRESS sync 40\n") == ("progress", ("sync", 40))
     assert mod.parse_line("PROGRESS frames 140") == ("progress", ("frames", 100))
@@ -150,6 +186,7 @@ class FakeMediaPool(object):
         self.root = FakeFolder("Master", selected)
         self.current = self.root
         self.imports = []
+        self.media_imports = []
 
     def __dir__(self):
         return ["GetSelectedClips", "ImportTimelineFromFile", "GetRootFolder"]
@@ -171,6 +208,12 @@ class FakeMediaPool(object):
     def SetCurrentFolder(self, f):
         self.current = f
         return True
+
+    def ImportMedia(self, paths):
+        self.media_imports.append((list(paths), self.current.name))
+        clips = [FakeClip(os.path.basename(p), p, "Still") for p in paths]
+        self.current.clips += clips
+        return clips
 
     def ImportTimelineFromFile(self, path, opts):
         self.imports.append((path, dict(opts), self.current.name))
@@ -225,7 +268,12 @@ FAKE_ENGINE = textwrap.dedent('''
     for stage in ("probe", "sync", "frames", "match", "write"):
         sys.stderr.write("PROGRESS %s 50\\nPROGRESS %s 100\\n" % (stage, stage))
     sys.stderr.write("WARN fake warning\\n")
-    res = {"warnings": ["fake warning"], "segments": 4}
+    res = {"warnings": ["fake warning"], "segments": 4, "transitions": 12, "stills": 3, "supersources": 0}
+    sdir = os.path.join(out, name + "_stills")
+    os.makedirs(sdir)
+    for s in ("s1.png", "s2.png"):
+        open(os.path.join(sdir, s), "wb").close()
+    res["stills_dir"] = sdir
     for kind in ("multicam", "conform", "stacked"):
         p = os.path.join(out, "%s_%s.fcpxml" % (name, kind))
         open(p, "w").write("<fcpxml/>")
@@ -275,6 +323,13 @@ def test_headless_smoke(mod, tmp_path, fake_install):
     assert all(i[1]["importSourceClips"] is True and i[2] == "PGM to Multicam" for i in project.mp.imports)
     assert project.current_tl.GetName() == "Show PGM Multicam Cut"
     assert mod.COMPOUND_HINT not in text
+    assert "Engine finished: 4 segments; 12 transitions, 3 stills, 0 SuperSource layouts." in text
+    sdir = media / "pgm2multicam" / "Show PGM_stills"
+    assert project.mp.media_imports == [([str(sdir / "s1.png"), str(sdir / "s2.png")], "PGM to Multicam")]
+    assert "Imported 2 of 2 still image(s)" in text
+    assert "SuperSource" not in text.replace("SuperSource layouts", "")
+    for flag in ("--no-dissolves", "--no-stills", "--no-supersource", "--stills-min-repeat"):
+        assert flag not in argv
 
 
 def test_headless_import_failure_and_name_clash(mod, tmp_path, fake_install):
@@ -314,3 +369,124 @@ def test_headless_requires_single_program(mod, tmp_path, fake_install):
 def test_main_without_resolve(mod, capsys):
     assert mod.main({}) is False
     assert "run this from DaVinci Resolve" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- SuperSource box fix-up against fake timelines
+
+class FakeItem(object):
+    def __init__(self, start, path, name="", refuse=()):
+        self.start, self.name, self.refuse, self.set = start, name, refuse, []
+        self.mpi = FakeClip(os.path.basename(path) if path else name, path) if path is not None else None
+
+    def GetStart(self):
+        return self.start
+
+    def GetName(self):
+        return self.name
+
+    def GetMediaPoolItem(self):
+        return self.mpi
+
+    def SetProperty(self, key, value):
+        self.set.append((key, value))
+        return key not in self.refuse
+
+
+class FakeTrackTimeline(object):
+    def __init__(self, tracks, start=90000, name="T"):
+        self.tracks, self.start, self.name = tracks, start, name
+
+    def GetName(self):
+        return self.name
+
+    def GetStartFrame(self):
+        return self.start
+
+    def GetTrackCount(self, kind):
+        return len(self.tracks) if kind == "video" else 1
+
+    def GetItemListInTrack(self, kind, idx):
+        return list(self.tracks.get(idx, [])) if kind == "video" else []
+
+
+def _analysis():
+    return {
+        "version": 2,
+        "program": {"path": "/m/PGM.mov", "width": 1920, "height": 1080},
+        "isos": [{"id": "a1", "name": "CAM1", "path": "/m/CAM1.mov", "width": 3840, "height": 2160},
+                 {"id": "a2", "name": "CAM2", "path": "/m/CAM2.mov", "width": 3840, "height": 2160}],
+        "transitions": [{"edit": 300, "duration": 10, "kind": "dissolve"}],
+        "supersources": [{"id": "ss1", "background": "s2", "occurrences": [[300, 900], [2000, 2100]],
+                          "boxes": [{"angle": "a2", "layer": 2, "rect": [0.57, 0.275, 0.93, 0.725],
+                                     "crop": [0.1, 0, 0.1, 0]},
+                                    {"angle": "a1", "layer": 1, "rect": [0.07, 0.275, 0.43, 0.725],
+                                     "crop": [0.1, 0, 0.1, 0]}]}],
+    }
+
+
+def test_box_targets(mod):
+    t = mod.box_targets(_analysis())
+    assert [(x["track"], x["name"], x["lo"], x["hi"]) for x in t] == [
+        (3, "CAM1", 288, 912), (3, "CAM1", 1988, 2112), (4, "CAM2", 288, 912), (4, "CAM2", 1988, 2112)]
+    assert t[0]["props"]["Pan"] == pytest.approx(-480) and t[2]["props"]["Pan"] == pytest.approx(480)
+    assert mod.box_targets({"program": {}, "supersources": _analysis()["supersources"]}) == []
+
+
+def test_find_box_item(mod):
+    tgt = mod.box_targets(_analysis())[0]
+    wrong_path = FakeItem(90305, "/m/CAM2.mov")
+    outside = FakeItem(90000 + 950, "/m/CAM1.mov")
+    good = FakeItem(90306, "/m/CAM1.mov")
+    tl = FakeTrackTimeline({1: [], 2: [], 3: [wrong_path, outside, good]})
+    assert mod.find_box_item(tl, tgt, 90000) is good
+    used = {id(good)}
+    assert mod.find_box_item(tl, tgt, 90000, used) is None
+    # fallback by name when there is no media pool path; and search on another track above V2
+    by_name = FakeItem(90310, None, name="CAM1 box")
+    tl2 = FakeTrackTimeline({1: [], 2: [], 3: [], 4: [by_name]})
+    assert mod.find_box_item(tl2, tgt, 90000) is by_name
+
+
+def test_apply_box_fixup(mod):
+    a1 = FakeItem(90305, "/m/CAM1.mov")
+    a2 = FakeItem(90305, "/m/CAM2.mov")
+    a1b = FakeItem(92000, "/m/CAM1.mov", refuse=("CropRetain",))
+    bg = FakeItem(90305, "/m/s2.png")
+    tl = FakeTrackTimeline({1: [], 2: [bg], 3: [a1, a1b], 4: [a2]})
+    applied, missing, failed = mod.apply_box_fixup(tl, _analysis())
+    assert (applied, missing, failed) == (3, 1, ["CropRetain"])
+    assert [k for k, _ in a1.set] == list(mod.BOX_PROP_ORDER)
+    got = dict(a1.set)
+    assert got["Pan"] == pytest.approx(-480) and got["CropLeft"] == pytest.approx(192)
+    assert dict(a2.set)["Pan"] == pytest.approx(480)
+    assert bg.set == []
+
+
+def test_fixup_supersources_logs_and_never_raises(mod, tmp_path):
+    path = tmp_path / "X_analysis.json"
+    path.write_text(json.dumps(_analysis()))
+    tl = FakeTrackTimeline({1: [], 2: [], 3: [FakeItem(90305, "/m/CAM1.mov")]}, name="X Conform")
+    lines = []
+    mod.fixup_supersources({"conform": tl, "stacked": object()},
+                           {"supersources": 1, "analysis": str(path)}, lines.append)
+    assert lines == ["SuperSource boxes on X Conform: 1 applied, 3 not found."]
+    lines = []
+    mod.fixup_supersources({"multicam": tl}, {"supersources": 1, "analysis": str(tmp_path / "nope.json")},
+                           lines.append)
+    assert len(lines) == 1 and "skipped" in lines[0]
+    lines = []
+    mod.fixup_supersources({"multicam": tl}, {"supersources": 0}, lines.append)
+    assert lines == []
+
+    class Broken(FakeTrackTimeline):
+        def GetItemListInTrack(self, kind, idx):
+            raise RuntimeError("boom")
+    lines = []
+    mod.fixup_supersources({"multicam": Broken({3: []})}, {"supersources": 1, "analysis": str(path)},
+                           lines.append)
+    assert "0 applied, 4 not found" in lines[0]
+
+
+def test_missing_stills(mod):
+    assert mod.missing_stills(["/o/s/s1.png", "/o/s/s2.png"], ["/o/s/s1.png", "", "/m/CAM1.mov"]) == \
+        ["/o/s/s2.png"]

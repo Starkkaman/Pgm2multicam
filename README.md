@@ -52,6 +52,8 @@ ffmpeg on PATH, for example from `winget install Gyan.FFmpeg`.
    - **Program clip**: preselected when the name contains PGM, Program, Prog or "PVW out".
    - **ISO clips**: the clips to use as angles.
    - **Sync**, **Audio in cut** and **Min shot**: matching options (see Tips).
+   - **Rebuild**: **Dissolves & dips**, **Repeating stills** (with **min repeats**, default 2) and
+     **SuperSource**. All on by default (see "Dissolves, stills and SuperSource").
    - **Import**: which timelines to import.
    - **Output folder**: defaults to a `pgm2multicam` folder next to the PGM file.
 4. Click **Analyze & Build**. The timelines land in a Media Pool bin called "PGM to Multicam", and the
@@ -90,6 +92,48 @@ Angle names come from the ISO file names. The ISOs must have the same frame rate
 4. A smoothing pass (Viterbi) picks the angle for each frame. It penalises switches and enforces a minimum
    shot length. Frames that match no ISO stay on the PGM angle.
 5. The resulting segments are written as FCPXML.
+
+## Dissolves, stills and SuperSource
+
+Besides the hard cuts, the engine looks for three more things in the PGM:
+
+- **Dissolves and dips**: a mix from one shot to the next, or a dip through a solid colour (usually black).
+- **Repeating stills**: static program images such as graphics, still-store frames or a holding slate.
+  Only images that appear at least **min repeats** times (default 2) are rebuilt. Each one is saved as a PNG
+  at PGM resolution in `OUTDIR/NAME_stills/`.
+- **SuperSource**: a layout of scaled and cropped ISOs (boxes) over background art.
+
+How they appear in the Multicam Cut and Conform timelines:
+
+- A transition between two camera or PGM shots becomes a Cross Dissolve. A dip becomes a dissolve into a
+  solid-colour clip and a dissolve out of it.
+- A still goes on **V2**, over the PGM clip.
+- A SuperSource puts its background (a still) on **V2** and each box on **V3** and up, as the ISO clip with
+  position, zoom and crop.
+- The PGM clip always stays on **V1** under stills and SuperSources. Disable the upper tracks to fall back to
+  the program picture.
+- Transitions into or out of a still or a SuperSource are not rebuilt. The PGM clip on V1 shows them, the
+  upper layers start after the transition and a "PGM transition" marker sits at the edit.
+- The Resolve script sets each box's Pan, Tilt, Zoom and Crop again after the import, because Resolve's
+  FCPXML import is not documented to carry crops. The log reports how many boxes it set.
+
+Flags (CLI) and their dialog equivalents:
+
+| CLI | Dialog | Effect |
+|---|---|---|
+| `--no-dissolves` | Dissolves & dips off | hard cuts only |
+| `--no-stills` | Repeating stills off | stills stay part of the PGM clip |
+| `--stills-min-repeat N` | min repeats | how often an image must appear (default 2) |
+| `--no-supersource` | SuperSource off | SuperSource layouts stay part of the PGM clip |
+
+Limits:
+
+- Box borders and outlines end up in the background art. Keyed graphics over the boxes are lost.
+- Moving boxes (animated layouts) use the layout of their middle frame.
+- One box per ISO per layout.
+- Box crops are detected up to about 30% per edge.
+- The background is always a still, even for a picture-in-picture over a live camera.
+- Dips use a solid colour.
 
 ## Tips
 
@@ -133,3 +177,6 @@ Angle names come from the ISO file names. The ISOs must have the same frame rate
 4. If your ISOs have multi-mono audio tracks: check which audio ends up in each angle.
 5. Open the Stacked timeline and check which tracks the files land on.
 6. If you got compound clips: check that Convert Compound Clips to Multicam Clips keeps the cut's angles.
+7. If the shoot has a SuperSource: check each box's position and crop after the import. If the transforms look
+   wrong after an import done with the CLI only (File > Import > Timeline), run the import through the Resolve
+   script: it sets the box geometry again.
