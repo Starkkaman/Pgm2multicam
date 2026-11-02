@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<!--
+  pgm2multicam reference sample (hand-written, FCPXML 1.10, validated against Apple's FCPXMLv1_10.dtd).
+  See docs/RESEARCH.md for the rules behind every attribute. NOT yet test-imported into Resolve.
+
+  Media (25 fps, 1920x1080, 48 kHz stereo):
+    CAM1.mov  start TC 01:00:00:00 (3600s)  duration 60s  (1500 frames)
+    CAM2.mov  start TC 01:00:02:00 (3602s)  duration 58s  (1450 frames)  -> starts 2 s after CAM1
+    PGM.mov   start TC 01:00:01:00 (3601s)  duration 55s  (1375 frames)  -> live program recording
+
+  Multicam timeline ("PGM2MC Multicam"): tcStart = earliest angle start = 01:00:00:00 (3600s),
+  duration 60s. Angles that start later get a leading <gap> so every angle is in sync.
+
+  Project "Cut": same TC as PGM (tcStart 3601s), 1375 frames, three mc-clips:
+    PGM frames    0..262   CAM1 video   (262 frames)
+    PGM frames  262..762   CAM2 video   (500 frames)
+    PGM frames  762..1375  PGM  video   (613 frames)
+  Audio always comes from the PGM angle (split angles via two mc-source elements).
+  Resolve support for split audio/video angles is UNVERIFIED; the fallback is a single
+  <mc-source angleID="..." srcEnable="all"/> per mc-clip.
+
+  Project "Stacked": a gap in the primary storyline spanning the multicam range, with each file
+  connected on its own lane (1 = CAM1, 2 = CAM2, 3 = PGM) at its synced position.
+
+  Time values: rational seconds, always a whole number of frames (n/25s; whole seconds reduced to "Ns").
+-->
+<fcpxml version="1.10">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p25" frameDuration="1/25s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+
+        <asset id="r2" name="CAM1" start="3600s" duration="60s" hasVideo="1" format="r1" hasAudio="1" videoSources="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" src="file:///Users/editor/Shoot/CAM1.mov"/>
+        </asset>
+        <asset id="r3" name="CAM2" start="3602s" duration="58s" hasVideo="1" format="r1" hasAudio="1" videoSources="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" src="file:///Users/editor/Shoot/CAM2.mov"/>
+        </asset>
+        <asset id="r4" name="PGM" start="3601s" duration="55s" hasVideo="1" format="r1" hasAudio="1" videoSources="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" src="file:///Users/editor/Shoot/PGM.mov"/>
+        </asset>
+
+        <media id="r5" name="PGM2MC Multicam">
+            <multicam format="r1" duration="60s" tcStart="3600s" tcFormat="NDF">
+                <mc-angle name="CAM1" angleID="cam1">
+                    <asset-clip ref="r2" name="CAM1" offset="3600s" start="3600s" duration="60s" format="r1" tcFormat="NDF"/>
+                </mc-angle>
+                <mc-angle name="CAM2" angleID="cam2">
+                    <gap name="Gap" offset="3600s" start="3600s" duration="2s"/>
+                    <asset-clip ref="r3" name="CAM2" offset="3602s" start="3602s" duration="58s" format="r1" tcFormat="NDF"/>
+                </mc-angle>
+                <mc-angle name="PGM" angleID="pgm">
+                    <gap name="Gap" offset="3600s" start="3600s" duration="1s"/>
+                    <asset-clip ref="r4" name="PGM" offset="3601s" start="3601s" duration="55s" format="r1" tcFormat="NDF"/>
+                </mc-angle>
+            </multicam>
+        </media>
+    </resources>
+
+    <library>
+        <event name="pgm2multicam">
+            <project name="Cut">
+                <sequence format="r1" duration="55s" tcStart="3601s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <!-- offset = timeline position (sequence tcStart + PGM frame / fps);
+                             start  = multicam time of that PGM frame (multicam tcStart + PGM angle position + frame / fps) -->
+                        <mc-clip ref="r5" name="CAM1" offset="3601s" start="3601s" duration="262/25s">
+                            <mc-source angleID="cam1" srcEnable="video"/>
+                            <mc-source angleID="pgm" srcEnable="audio"/>
+                        </mc-clip>
+                        <mc-clip ref="r5" name="CAM2" offset="90287/25s" start="90287/25s" duration="20s">
+                            <mc-source angleID="cam2" srcEnable="video"/>
+                            <mc-source angleID="pgm" srcEnable="audio"/>
+                        </mc-clip>
+                        <mc-clip ref="r5" name="PGM" offset="90787/25s" start="90787/25s" duration="613/25s">
+                            <mc-source angleID="pgm" srcEnable="all"/>
+                        </mc-clip>
+                    </spine>
+                </sequence>
+            </project>
+
+            <project name="Stacked">
+                <sequence format="r1" duration="60s" tcStart="3600s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <!-- Anchored (connected) clips: offset is in the parent gap's local time,
+                             which starts at the gap's start (3600s). -->
+                        <gap name="Gap" offset="3600s" start="3600s" duration="60s">
+                            <asset-clip ref="r2" name="CAM1" lane="1" offset="3600s" start="3600s" duration="60s" format="r1" tcFormat="NDF"/>
+                            <asset-clip ref="r3" name="CAM2" lane="2" offset="3602s" start="3602s" duration="58s" format="r1" tcFormat="NDF"/>
+                            <asset-clip ref="r4" name="PGM" lane="3" offset="3601s" start="3601s" duration="55s" format="r1" tcFormat="NDF"/>
+                        </gap>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+    </library>
+</fcpxml>
