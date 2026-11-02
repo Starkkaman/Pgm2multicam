@@ -237,9 +237,7 @@ def _supersource(ffmpeg_exe, analysis, segments, assets_dir, warnings, progress)
     try:
         found, bg_stills = detect_supersources(ffmpeg_exe, analysis, candidates, os.path.abspath(assets_dir),
                                                min_len=SS_MIN_LEN, progress=progress)
-    except EngineError:
-        raise
-    except Exception as e:  # a detector bug must not lose the rest of the analysis
+    except Exception as e:  # a detector bug or decode error must not lose the rest of the analysis
         warnings.append("SuperSource detection failed: %s" % e)
         return segments
     used = set(s["id"] for s in analysis["stills"])
