@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""PGM to Multicam: DaVinci Resolve script (Workspace > Scripts > Utility > PGM to Multicam).
+"""PGM to Multicam: DaVinci Resolve script (Workspace > Scripts > PGM to Multicam).
 
 Pick the live-cut program clip and the ISO clips in the Media Pool, run the pgm2multicam engine in a
 subprocess, and import the resulting FCPXML timelines. Stdlib only, Python 3.6+.

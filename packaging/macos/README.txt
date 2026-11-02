@@ -21,8 +21,9 @@ Use
    The program clip's name should contain PGM, Program, Prog or "PVW out".
 2. Workspace > Scripts > PGM to Multicam.
 3. Resolve Studio shows a dialog: check the settings and click Analyze & Build.
-   Free Resolve 19.1 and later runs without a dialog, using default settings; progress appears in
-   Workspace > Console.
+   Free Resolve 19.0 and earlier shows the dialog too. Free 19.1 to 21.0 runs without a dialog, using
+   default settings; progress appears in Workspace > Console. Free 21.1 and later restricts scripting
+   to Studio, so the script may not run there at all.
 The timelines land in a Media Pool bin called "PGM to Multicam". The analysis files are written to a
 "pgm2multicam" folder next to the PGM file.
 

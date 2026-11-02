@@ -1,4 +1,4 @@
--- PGM to Multicam: DaVinci Resolve script (Workspace > Scripts > Utility > PGM to Multicam).
+-- PGM to Multicam: DaVinci Resolve script (Workspace > Scripts > PGM to Multicam).
 --
 -- Lua port of "PGM to Multicam.py" (Resolve embeds Lua, so no Python is needed). Pick the live-cut program clip
 -- and the ISO clips in the Media Pool; the script runs the self-contained pgm2mc engine in the background,

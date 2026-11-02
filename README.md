@@ -92,7 +92,8 @@ ffmpeg on PATH, for example from `winget install Gyan.FFmpeg`.
 4. Click **Analyze & Build**. The timelines land in a Media Pool bin called "PGM to Multicam", and the
    Multicam Cut timeline opens.
 
-Without the dialog (free Resolve 19.1+):
+Without the dialog (free Resolve 19.1 to 21.0; free 21.1+ restricts scripting to Studio, so the script may
+not run there at all — use the CLI and File > Import > Timeline):
 - The program clip must be the only selected clip whose name matches PGM, Program, Prog or "PVW out".
 - All other selected video clips become ISOs.
 - The Multicam Cut and Conform timelines are imported.
