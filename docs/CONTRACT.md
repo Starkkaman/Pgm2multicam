@@ -132,3 +132,14 @@ Engine module boundaries:
   where `analysis` is the v2 dict built so far (program + isos with offsets), `candidates` = list of
   `[start, end]` pgm-segment ranges; returns new supersource entries (with `occurrences`) and the background still
   entries it wrote (role "background"). analyze.py then relabels the matching segments.
+
+### Writer decisions (orchestrator, after RESEARCH2)
+- Transitions between two camera/pgm segments → real FCPXML Cross Dissolve on the spine (uid per RESEARCH2).
+  A dip → dissolve, solid-colour slug (generated PNG), dissolve, as RESEARCH2 recommends.
+- A transition that touches a `still` or `supersource` segment is NOT rebuilt: the PGM clip shows it. The spine cut
+  moves to the transition's start (incoming) or end (outgoing) so the PGM-angle clip covers the whole transition, no
+  `<transition>` element is written, and the lane layers (still / background / boxes) start after the incoming
+  transition ends and stop before the outgoing one starts. Add a marker "PGM transition" at the edit.
+- FCPXML gets adjust-transform (+ adjust-crop with mode="trim") per RESEARCH2 §7; the Resolve script re-applies the
+  box geometry after import with TimelineItem.SetProperty (Pan/Tilt/ZoomX/ZoomY/Crop*), since Resolve's FCPXML import
+  is not documented to carry crop. The CLI-only path relies on the FCPXML values.

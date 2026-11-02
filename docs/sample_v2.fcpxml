@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<!-- pgm2multicam sample v2 (docs/RESEARCH2.md): 25 fps 1920x1080, TC 01:00:00:00.
+     CAM1 -> 1 s Cross Dissolve -> CAM2 (mc-clips); PGM mc-clip + PNG still on lane 1;
+     SuperSource = PGM mc-clip + background PNG (lane 1) + two 3840x2160 ISO boxes (lanes 2-3,
+     scale 0.45, trimmed 10% left/right, centred at x = 25% / 75%); dip to black (30 frames) built as
+     Cross Dissolve -> black PNG slug -> Cross Dissolve. Generated, DTD-validated; not test-imported. -->
+<fcpxml version="1.10">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p25" frameDuration="1/25s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)" />
+        <format id="r2" name="FFVideoFormat3840x2160p25" frameDuration="1/25s" width="3840" height="2160" colorSpace="1-1-1 (Rec. 709)" />
+        <format id="r3" name="FFVideoFormatRateUndefined" width="1920" height="1080" colorSpace="1-13-1" />
+        <asset id="r4" name="CAM1" start="3600s" duration="60s" hasVideo="1" format="r2" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" src="file:///Volumes/Shoot/CAM1.mov" />
+        </asset>
+        <asset id="r5" name="CAM2" start="3600s" duration="60s" hasVideo="1" format="r2" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" src="file:///Volumes/Shoot/CAM2.mov" />
+        </asset>
+        <asset id="r6" name="PGM" start="3600s" duration="60s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" src="file:///Volumes/Shoot/PGM.mov" />
+        </asset>
+        <asset id="r7" name="s1" start="0s" duration="0s" hasVideo="1" format="r3" videoSources="1">
+            <media-rep kind="original-media" src="file:///Volumes/Shoot/NAME_stills/s1.png" />
+        </asset>
+        <asset id="r8" name="s2" start="0s" duration="0s" hasVideo="1" format="r3" videoSources="1">
+            <media-rep kind="original-media" src="file:///Volumes/Shoot/NAME_stills/s2.png" />
+        </asset>
+        <asset id="r9" name="black" start="0s" duration="0s" hasVideo="1" format="r3" videoSources="1">
+            <media-rep kind="original-media" src="file:///Volumes/Shoot/NAME_stills/black.png" />
+        </asset>
+        <effect id="r10" name="Cross Dissolve" uid="FxPlug:4731E73A-8DAC-4113-9A30-AE85B1761265" />
+        <media id="r11" name="NAME Multicam">
+            <multicam format="r1" tcStart="3600s" tcFormat="NDF">
+                <mc-angle name="CAM1" angleID="a1">
+                    <asset-clip ref="r4" offset="3600s" name="CAM1" start="3600s" duration="60s" format="r2" tcFormat="NDF" />
+                </mc-angle>
+                <mc-angle name="CAM2" angleID="a2">
+                    <asset-clip ref="r5" offset="3600s" name="CAM2" start="3600s" duration="60s" format="r2" tcFormat="NDF" />
+                </mc-angle>
+                <mc-angle name="PGM" angleID="pgm">
+                    <asset-clip ref="r6" offset="3600s" name="PGM" start="3600s" duration="60s" format="r1" tcFormat="NDF" />
+                </mc-angle>
+            </multicam>
+        </media>
+    </resources>
+    <library>
+        <event name="pgm2multicam sample v2">
+            <project name="NAME Multicam Cut v2">
+                <sequence format="r1" duration="45s" tcStart="3600s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <mc-clip ref="r11" offset="3600s" name="CAM1" start="3600s" duration="10s">
+                            <mc-source angleID="a1" srcEnable="video" />
+                            <mc-source angleID="pgm" srcEnable="audio" />
+                        </mc-clip>
+                        <transition name="Cross Dissolve" offset="90238/25s" duration="1s">
+                            <filter-video ref="r10" name="Cross Dissolve" />
+                        </transition>
+                        <mc-clip ref="r11" offset="3610s" name="CAM2" start="3610s" duration="10s">
+                            <mc-source angleID="a2" srcEnable="video" />
+                            <mc-source angleID="pgm" srcEnable="audio" />
+                        </mc-clip>
+                        <mc-clip ref="r11" offset="3620s" name="PGM (still s1)" start="3620s" duration="5s">
+                            <mc-source angleID="pgm" srcEnable="all" />
+                            <video ref="r7" lane="1" offset="3620s" name="s1" start="0s" duration="5s" />
+                        </mc-clip>
+                        <mc-clip ref="r11" offset="3625s" name="PGM (SuperSource ss1)" start="3625s" duration="10s">
+                            <mc-source angleID="pgm" srcEnable="all" />
+                            <video ref="r8" lane="1" offset="3625s" name="s2 (SS background)" start="0s" duration="10s" />
+                            <asset-clip ref="r4" lane="2" offset="3625s" name="CAM1 box" start="3625s" duration="10s" format="r2" tcFormat="NDF" srcEnable="video">
+                                <adjust-crop mode="trim">
+                                    <trim-rect left="17.7778" top="0" right="17.7778" bottom="0" />
+                                </adjust-crop>
+                                <adjust-conform type="fit" />
+                                <adjust-transform position="-44.4444 0" scale="0.45 0.45" />
+                            </asset-clip>
+                            <asset-clip ref="r5" lane="3" offset="3625s" name="CAM2 box" start="3625s" duration="10s" format="r2" tcFormat="NDF" srcEnable="video">
+                                <adjust-crop mode="trim">
+                                    <trim-rect left="17.7778" top="0" right="17.7778" bottom="0" />
+                                </adjust-crop>
+                                <adjust-conform type="fit" />
+                                <adjust-transform position="44.4444 0" scale="0.45 0.45" />
+                            </asset-clip>
+                        </mc-clip>
+                        <mc-clip ref="r11" offset="3635s" name="CAM1" start="3635s" duration="117/25s">
+                            <mc-source angleID="a1" srcEnable="video" />
+                            <mc-source angleID="pgm" srcEnable="audio" />
+                        </mc-clip>
+                        <transition name="Cross Dissolve" offset="18197/5s" duration="3/5s">
+                            <filter-video ref="r10" name="Cross Dissolve" />
+                        </transition>
+                        <video ref="r9" offset="90992/25s" name="dip to black" start="7/25s" duration="3/5s" />
+                        <transition name="Cross Dissolve" offset="3640s" duration="3/5s">
+                            <filter-video ref="r10" name="Cross Dissolve" />
+                        </transition>
+                        <mc-clip ref="r11" offset="91007/25s" name="CAM2" start="91007/25s" duration="118/25s">
+                            <mc-source angleID="a2" srcEnable="video" />
+                            <mc-source angleID="pgm" srcEnable="audio" />
+                        </mc-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+    </library>
+</fcpxml>
